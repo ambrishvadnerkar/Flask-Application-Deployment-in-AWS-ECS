@@ -1,0 +1,82 @@
+name: Deployment - Reusable workflow
+
+on:
+    workflow_call: 
+        secrets:
+          access_key_id:
+            required: true
+          secret_key:
+            required: true
+          account_id:
+            required: true
+        inputs:
+          AWS_REGION:
+            type: string
+            required: true
+          TASK_DEF_ARN:
+            type: string
+            required: true
+          APP_CONTAINER_NAME:
+            type: string
+            required: true
+          ECR_REPOSITORY:
+            type: string
+            required: true
+          IMAGE_TAG:
+            type: string
+            required: true
+          ECS_CLUSTER:
+            type: string
+            required: true
+          ECS_SERVICE:
+            type: string
+            required: true
+          
+jobs:
+    deployment-steps:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout Code
+              uses: actions/checkout@v4
+
+            - name: Set Up AWS Credentials
+              uses: aws-actions/configure-aws-credentials@v2
+              with:
+                aws-access-key-id: ${{ secrets.access_key_id }}
+                aws-secret-access-key: ${{ secrets.secret_key }}
+                aws-region: ${{ inputs.AWS_REGION }}
+
+            - name: Log in to Amazon ECR
+              id: login-ecr
+              uses: aws-actions/amazon-ecr-login@v2
+            
+
+            - name: Render Amazon ECS task definition
+              id: render-web-container
+              uses: aws-actions/amazon-ecs-render-task-definition@v1
+              with:
+                task-definition-arn: ${{ inputs.TASK_DEF_ARN }}
+                container-name: ${{ inputs.APP_CONTAINER_NAME }}
+                image: "${{ secrets.account_id }}.dkr.ecr.${{ inputs.AWS_REGION }}.amazonaws.com/${{ inputs.ECR_REPOSITORY }}:${{ inputs.IMAGE_TAG }}"
+        
+            - name: Check if ECS Service Exists
+              id: check-service
+              run: |
+                if aws ecs describe-services --cluster ${{ inputs.ECS_CLUSTER  }} --services ${{ inputs.ECS_SERVICE }} | jq -e '.services | length == 0' > /dev/null; then
+                    echo "SERVICE_EXISTS=false" >> $GITHUB_ENV
+                else
+                    echo "SERVICE_EXISTS=true" >> $GITHUB_ENV
+                fi
+
+            - name: Check if ECS Service Exists
+              if: env.SERVICE_EXISTS == 'false'
+              run: echo "Service does not existing"
+        
+            - name: Deploy to Amazon ECS service
+              if: env.SERVICE_EXISTS == 'true'
+              uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+              with:
+                task-definition: ${{ steps.render-web-container.outputs.task-definition }}
+                service: ${{ inputs.ECS_SERVICE }}
+                cluster: ${{ inputs.ECS_CLUSTER  }}
+                wait-for-service-stability: true  

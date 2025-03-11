@@ -1,0 +1,122 @@
+name: CI/CD for Flask App on AWS ECS
+
+on:
+  push:
+    branches:
+      - main
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }} 
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }} 
+  ECS_CLUSTER:  ${{ vars.ECS_CLUSTER }} 
+  ECS_SERVICE:  ${{ vars.ECS_SERVICE }} 
+  IMAGE_TAG: ${{ github.sha }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  TASK_DEF_ARN:  ${{ vars.TASK_DEF_ARN }} 
+  APP_URL: ${{ vars.APP_URL }}
+  APP_CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME }}
+  
+jobs:
+  code-scan:
+    name: Code Quality & Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ env.APP_CONTAINER_NAME }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ env.APP_CONTAINER_NAME }}-pip-
+      
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Flake8 for Code Linting
+        run: |
+          pip install flake8
+          flake8 ./ --count --max-line-length=100 --show-source --statistics
+
+      - name: Run Safety for Dependency Security Check
+        continue-on-error: true
+        run: |
+          pip install safety
+          safety check --full-report
+  build-and-push:
+    name: Build and Push Docker Image to ECR
+    runs-on: ubuntu-latest
+    needs: code-scan
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Build and Tag Docker Image
+        run: |
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Push Docker Image to ECR
+        run: |
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+
+      - name: Scan Docker Image for Vulnerabilities with Trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          exit-code: 1
+          ignore-unfixed: true
+          severity: "HIGH,CRITICAL"
+     
+      - name: Scan image with anchore/scan-action
+        continue-on-error: true
+        uses: anchore/scan-action@v6
+        with:
+          image: "${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+      
+
+  deployment:
+    name: Deploy to AWS ECS Fargate
+    needs: build-and-push
+    uses: ./.github/workflows/reusable-deployment.yml
+    secrets:
+      access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      secret_key:  ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      account_id:  ${{ secrets.AWS_ACCOUNT_ID }}
+    with:
+      AWS_REGION: ${{ vars.AWS_REGION }} 
+      TASK_DEF_ARN: ${{ vars.TASK_DEF_ARN }}
+      APP_CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }} 
+      IMAGE_TAG: ${{ github.sha }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+
+  integration-testing:
+    name: Integration Testing
+    needs: deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Integration testing using CURL and JQ
+        run: |
+          echo $APP_URL
+          echo "-------------------------------------------"
+          curl $APP_URL/health -s -k | jq -r .status | grep -i "healthy"
+ 
