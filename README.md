@@ -80,9 +80,3 @@ The pipeline is triggered automatically on every push to the `main` branch.
 
   - Run `aws ecr get-login-password --region <AWS_REGION> | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com` manually to validate authentication.
 
-## Conclusion
-
-This CI/CD pipeline ensures efficient deployment of the Flask application on AWS ECS while maintaining code quality and security. Modify and extend the pipeline as needed for additional functionality.
-
-
->>>>>>> 9b96fea9b932bec4f566341fd80981495d7d54c2
