@@ -1,5 +1,5 @@
 # Stage 1: Build dependencies using python:3.9-slim
-FROM python:3.9-slim AS builder
+FROM python:3.12-slim AS builder
 
 # Set environment variables for security and performance
 ENV PYTHONUNBUFFERED=1 \
